@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>2D Песочница</title>
+  <style>
+    html, body {
+      margin: 0;
+      overflow: hidden;
+      touch-action: none;
+    }
+    canvas {
+      display: block;
+      background: #87ceeb;
+    }
+    .controls {
+      position: absolute;
+      bottom: 10px;
+      left: 10px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .btn {
+      width: 60px;
+      height: 60px;
+      background: rgba(255, 255, 255, 0.5);
+      border: 2px solid #333;
+      border-radius: 10px;
+      font-size: 24px;
+      text-align: center;
+      line-height: 60px;
+      user-select: none;
+    }
+    #blockInfo {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: rgba(255,255,255,0.7);
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-family: sans-serif;
+      font-size: 16px;
+    }
+    #inventory {
+      position: absolute;
+      bottom: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 5px;
+      background: rgba(255,255,255,0.7);
+      padding: 8px;
+      border-radius: 8px;
+    }
+    .inv-slot {
+      width: 40px;
+      height: 40px;
+      border: 2px solid #333;
+      border-radius: 5px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+    .inv-slot.active {
+      border-color: #ff0;
+      background: rgba(255,255,0,0.3);
+    }
+    @media (min-width: 768px) {
+      .controls { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div class="controls" id="mobileControls">
+    <div class="btn" data-key="w">W</div>
+    <div class="btn" data-key="a">A</div>
+    <div class="btn" data-key="s">S</div>
+    <div class="btn" data-key="d">D</div>
+    <div class="btn" data-key="e">E</div>
+    <div class="btn" data-key="q">Q</div>
+  </div>
+  <div id="blockInfo">Блок: Трава</div>
+  <div id="inventory"></div>
+
+  <script>
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    const tileSize = 32;
+    const world = new Map();
+    let currentBlock = 2;
+    let gravityEnabled = true;
+    let physicsEnabled = true;
+    let inventoryOpen = false;
+
+    const player = {
+      x: canvas.width / 2,
+      y: canvas.height / 2,
+      speed: 4,
+      velocityY: 0,
+      jumping: false,
+      inventory: {
+        1: { type: 1, count: 99, name: "Земля" },
+        2: { type: 2, count: 99, name: "Трава" },
+        3: { type: 3, count: 99, name: "Камень" },
+        4: { type: 4, count: 99, name: "Песок" },
+        5: { type: 5, count: 99, name: "Вода" },
+        6: { type: 6, count: 99, name: "Дерево" },
+        7: { type: 7, count: 99, name: "Листья" }
+      },
+      selectedSlot: 1
+    };
+
+    const keys = {};
+
+    const blocks = {
+      0: { name: "Воздух", color: null, physics: false },
+      1: { name: "Земля", color: "#8B4513", physics: false },
+      2: { name: "Трава", color: "#00aa00", physics: false },
+      3: { name: "Камень", color: "#888888", physics: false },
+      4: { name: "Песок", color: "#e5c100", physics: true },
+      5: { name: "Вода", color: "#1a73e8", physics: true, liquid: true },
+      6: { name: "Дерево", color: "#5e2c04", physics: false },
+      7: { name: "Листья", color: "#3a8a21", physics: false }
+    };
+
+    function drawTile(x, y, type) {
+      if (blocks[type].color) {
+        ctx.fillStyle = blocks[type].color;
+        ctx.fillRect(x, y, tileSize, tileSize);
+        
+        // Добавляем текстуру для некоторых блоков
+        if (type === 2) { // Трава
+          ctx.fillStyle = "#008800";
+          for (let i = 0; i < 5; i++) {
+            const px = x + Math.random() * tileSize;
+            const py = y + Math.random() * tileSize;
+            ctx.fillRect(px, py, 2, 2);
+          }
+        } else if (type === 4) { // Песок
+          ctx.fillStyle = "#d9b300";
+          for (let i = 0; i < 8; i++) {
+            const px = x + Math.random() * tileSize;
+            const py = y + Math.random() * tileSize;
+            ctx.fillRect(px, py, 3, 3);
+          }
+        } else if (type === 6) { // Дерево
+          ctx.fillStyle = "#4a2403";
+          ctx.fillRect(x + tileSize/4, y, tileSize/2, tileSize);
+        } else if (type === 7) { // Листья
+          ctx.fillStyle = "#2e7d17";
+          for (let i = 0; i < 15; i++) {
+            const px = x + Math.random() * tileSize;
+            const py = y + Math.random() * tileSize;
+            const size = 2 + Math.random() * 4;
+            ctx.fillRect(px, py, size, size);
+          }
+        }
+      }
+    }
+
+    function drawWorld() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Рисуем небо с градиентом
+      const skyGradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+      skyGradient.addColorStop(0, "#87ceeb");
+      skyGradient.addColorStop(1, "#e0f7ff");
+      ctx.fillStyle = skyGradient;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      const startX = Math.floor((player.x - canvas.width / 2) / tileSize) - 1;
+      const startY = Math.floor((player.y - canvas.height / 2) / tileSize) - 1;
+      const endX = startX + Math.ceil(canvas.width / tileSize) + 2;
+      const endY = startY + Math.ceil(canvas.height / tileSize) + 2;
+
+      for (let x = startX; x < endX; x++) {
+        for (let y = startY; y < endY; y++) {
+          const key = `${x},${y}`;
+          const type = world.get(key) || 0;
+          if (type !== 0) {
+            const screenX = canvas.width / 2 + (x * tileSize - player.x);
+            const screenY = canvas.height / 2 + (y * tileSize - player.y);
+            drawTile(screenX, screenY, type);
+          }
+        }
+      }
+
+      // Рисуем игрока
+      ctx.fillStyle = "#0000ff";
+      ctx.fillRect(canvas.width / 2, canvas.height / 2, tileSize, tileSize);
+      
+      // Рисуем тень под игроком
+      ctx.fillStyle = "rgba(0,0,0,0.2)";
+      ctx.beginPath();
+      ctx.ellipse(canvas.width / 2 + tileSize/2, canvas.height / 2 + tileSize + 5, 
+                 tileSize/2, tileSize/4, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function update() {
+      // Горизонтальное движение
+      if (keys["a"]) player.x -= player.speed;
+      if (keys["d"]) player.x += player.speed;
+      
+      // Гравитация и прыжок
+      if (gravityEnabled) {
+        player.velocityY += 0.5; // Гравитация
+        if (player.velocityY > 10) player.velocityY = 10;
+        
+        // Проверка коллизии с землей
+        const feetTile = getTileAtScreenPos(canvas.width/2, canvas.height/2 + tileSize + 1);
+        const feetKey = `${feetTile.x},${feetTile.y}`;
+        const feetBlock = world.get(feetKey) || 0;
+        
+        if (feetBlock !== 0 && player.velocityY > 0) {
+          player.velocityY = 0;
+          player.jumping = false;
+          // Корректировка позиции, чтобы не проваливаться
+          player.y = feetTile.y * tileSize - tileSize + (canvas.height/2 - player.y);
+        }
+        
+        // Прыжок
+        if ((keys["w"] || keys[" "]) && !player.jumping) {
+          player.velocityY = -12;
+          player.jumping = true;
+        }
+        
+        player.y += player.velocityY;
+      } else {
+        // Без гравитации - простое движение вверх/вниз
+        if (keys["w"]) player.y -= player.speed;
+        if (keys["s"]) player.y += player.speed;
+      }
+      
+      // Применяем физику к блокам
+      if (physicsEnabled) {
+        applyPhysics();
+      }
+    }
+
+    function applyPhysics() {
+      // Собираем все блоки с физикой
+      const physicsBlocks = [];
+      world.forEach((type, key) => {
+        if (blocks[type].physics) {
+          const [x, y] = key.split(",").map(Number);
+          physicsBlocks.push({x, y, type});
+        }
+      });
+      
+      // Сортируем снизу вверх для правильного падения
+      physicsBlocks.sort((a, b) => b.y - a.y);
+      
+      physicsBlocks.forEach(block => {
+        const key = `${block.x},${block.y}`;
+        const belowKey = `${block.x},${block.y+1}`;
+        
+        // Проверяем блок под текущим
+        const belowBlock = world.get(belowKey) || 0;
+        
+        if (belowBlock === 0) {
+          // Падение вниз
+          world.delete(key);
+          world.set(belowKey, block.type);
+        } else if (blocks[belowBlock].liquid && !blocks[block.type].liquid) {
+          // Если под нами жидкость, то меняемся местами
+          world.delete(key);
+          world.set(belowKey, block.type);
+          world.set(key, belowBlock);
+        } else if (blocks[block.type].liquid) {
+          // Растекание жидкости
+          const leftKey = `${block.x-1},${block.y}`;
+          const rightKey = `${block.x+1},${block.y}`;
+          const leftBlock = world.get(leftKey) || 0;
+          const rightBlock = world.get(rightKey) || 0;
+          
+          // Случайное направление для растекания
+          const dir = Math.random() > 0.5 ? 1 : -1;
+          
+          if (leftBlock === 0 && rightBlock === 0) {
+            // Если обе стороны свободны, выбираем случайную
+            const newKey = dir > 0 ? rightKey : leftKey;
+            world.delete(key);
+            world.set(newKey, block.type);
+          } else if (leftBlock === 0) {
+            world.delete(key);
+            world.set(leftKey, block.type);
+          } else if (rightBlock === 0) {
+            world.delete(key);
+            world.set(rightKey, block.type);
+          }
+        }
+      });
+    }
+
+    function getTileAtScreenPos(screenX, screenY) {
+      const worldX = Math.floor((screenX - canvas.width / 2 + player.x) / tileSize);
+      const worldY = Math.floor((screenY - canvas.height / 2 + player.y) / tileSize);
+      return { x: worldX, y: worldY };
+    }
+
+    function handleBlockInteraction(screenX, screenY, place) {
+      const tile = getTileAtScreenPos(screenX, screenY);
+      const key = `${tile.x},${tile.y}`;
+      
+      if (place) {
+        if (!world.has(key) && player.inventory[player.selectedSlot].count > 0) {
+          world.set(key, player.inventory[player.selectedSlot].type);
+          player.inventory[player.selectedSlot].count--;
+          updateInventory();
+        }
+      } else {
+        if (world.has(key)) {
+          const blockType = world.get(key);
+          // Добавляем блок в инвентарь
+          for (let slot in player.inventory) {
+            if (player.inventory[slot].type === blockType) {
+              player.inventory[slot].count++;
+              break;
+            }
+          }
+          world.delete(key);
+          updateInventory();
+        }
+      }
+    }
+
+    function generateWorld() {
+      // Генерация земли
+      for (let x = -50; x < 50; x++) {
+        const surfaceY = 5 + Math.floor(Math.sin(x/10) * 3);
+        
+        for (let y = surfaceY; y < surfaceY + 10; y++) {
+          if (y === surfaceY) {
+            world.set(`${x},${y}`, 2); // Трава
+          } else if (y < surfaceY + 3) {
+            world.set(`${x},${y}`, 1); // Земля
+          } else {
+            world.set(`${x},${y}`, 3); // Камень
+          }
+        }
+      }
+      
+      // Генерация деревьев
+      for (let i = 0; i < 10; i++) {
+        const treeX = Math.floor(Math.random() * 80) - 40;
+        const surfaceKey = `${treeX},${5 + Math.floor(Math.sin(treeX/10) * 3)}`;
+        if (world.get(surfaceKey) === 2) { // Если это трава
+          // Ствол
+          for (let y = 1; y <= 4; y++) {
+            world.set(`${treeX},${surfaceKey.split(",")[1] - y}`, 6);
+          }
+          // Листья
+          for (let lx = -2; lx <= 2; lx++) {
+            for (let ly = -3; ly <= -1; ly++) {
+              if (Math.random() > 0.3 || (Math.abs(lx) <= 1 && ly >= -2)) {
+                world.set(`${treeX + lx},${surfaceKey.split(",")[1] - 4 + ly}`, 7);
+              }
+            }
+          }
+        }
+      }
+      
+      // Генерация песка и воды
+      for (let x = -50; x < 50; x++) {
+        for (let y = 0; y < 2; y++) {
+          if (x > 10 && x < 30 && y === 0) {
+            world.set(`${x},${5 + Math.floor(Math.sin(x/10) * 3) + y}`, 4); // Песок
+          }
+          if (x > -15 && x < 15 && y < 3) {
+            world.set(`${x},${10 + y}`, 5); // Вода
+          }
+        }
+      }
+    }
+
+    function updateInventory() {
+      const inventoryEl = document.getElementById("inventory");
+      inventoryEl.innerHTML = "";
+      
+      for (let slot in player.inventory) {
+        const slotEl = document.createElement("div");
+        slotEl.className = `inv-slot ${player.selectedSlot == slot ? "active" : ""}`;
+        slotEl.innerHTML = `
+          <div style="font-size: 12px; text-align: center;">
+            <div style="background: ${blocks[player.inventory[slot].type].color}; 
+                        width: 20px; height: 20px; margin: 0 auto;"></div>
+            ${player.inventory[slot].count}
+          </div>
+        `;
+        slotEl.addEventListener("click", () => {
+          player.selectedSlot = slot;
+          currentBlock = player.inventory[slot].type;
+          document.getElementById("blockInfo").textContent = `Блок: ${blocks[currentBlock].name}`;
+          updateInventory();
+        });
+        inventoryEl.appendChild(slotEl);
+      }
+    }
+
+    window.addEventListener("keydown", (e) => {
+      keys[e.key.toLowerCase()] = true;
+      
+      // Переключение слотов инвентаря
+      if (e.key >= "1" && e.key <= "7") {
+        player.selectedSlot = e.key;
+        currentBlock = player.inventory[e.key].type;
+        document.getElementById("blockInfo").textContent = `Блок: ${blocks[currentBlock].name}`;
+        updateInventory();
+      }
+      
+      // Открытие/закрытие инвентаря
+      if (e.key === "e") {
+        inventoryOpen = !inventoryOpen;
+        document.getElementById("inventory").style.display = inventoryOpen ? "flex" : "none";
+      }
+      
+      // Переключение гравитации
+      if (e.key === "g") {
+        gravityEnabled = !gravityEnabled;
+        alert(`Гравитация ${gravityEnabled ? "включена" : "выключена"}`);
+      }
+      
+      // Переключение физики
+      if (e.key === "p") {
+        physicsEnabled = !physicsEnabled;
+        alert(`Физика ${physicsEnabled ? "включена" : "выключена"}`);
+      }
+    });
+    
+    window.addEventListener("keyup", (e) => keys[e.key.toLowerCase()] = false);
+
+    document.querySelectorAll(".btn").forEach(btn => {
+      const key = btn.dataset.key;
+      btn.addEventListener("touchstart", e => {
+        keys[key] = true;
+        e.preventDefault();
+      });
+      btn.addEventListener("touchend", e => {
+        keys[key] = false;
+        e.preventDefault();
+      });
+    });
+
+    canvas.addEventListener("mousedown", (e) => {
+      const place = e.button === 0;
+      handleBlockInteraction(e.clientX, e.clientY, place);
+    });
+
+    canvas.addEventListener("mousemove", (e) => {
+      if (e.buttons === 1 || e.buttons === 2) {
+        const place = e.buttons === 1;
+        handleBlockInteraction(e.clientX, e.clientY, place);
+      }
+    });
+
+    canvas.addEventListener("touchstart", (e) => {
+      e.preventDefault();
+      const touch = e.touches[0];
+      const place = !keys["q"];
+      handleBlockInteraction(touch.clientX, touch.clientY, place);
+    });
+
+    canvas.addEventListener("touchmove", (e) => {
+      e.preventDefault();
+      const touch = e.touches[0];
+      const place = !keys["q"];
+      handleBlockInteraction(touch.clientX, touch.clientY, place);
+    });
+
+    document.addEventListener("touchmove", (e) => {
+      if (e.target === canvas) e.preventDefault();
+    }, { passive: false });
+
+    function gameLoop() {
+      update();
+      drawWorld();
+      requestAnimationFrame(gameLoop);
+    }
+
+    // Инициализация
+    generateWorld();
+    updateInventory();
+    gameLoop();
+    
+    // Обработка изменения размера окна
+    window.addEventListener("resize", () => {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      player.x = canvas.width / 2;
+      player.y = canvas.height / 2;
+    });
+  </script>
+</body>
+</html>
